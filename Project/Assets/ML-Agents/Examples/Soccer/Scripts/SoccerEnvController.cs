@@ -1,5 +1,7 @@
 using System.Collections.Generic;
+using System.IO;
 using Unity.MLAgents;
+using Unity.MLAgents.Policies;
 using UnityEngine;
 
 public class SoccerEnvController : MonoBehaviour
@@ -21,6 +23,15 @@ public class SoccerEnvController : MonoBehaviour
     /// Max Academy steps before this platform resets
     /// </summary>
     [Tooltip("Max Environment Steps")] public int MaxEnvironmentSteps = 25000;
+    
+    /// <summary>
+    /// Enable evaluation logging
+    /// </summary>
+    [Tooltip("Enable Evaluation Logging")] public bool enableEvaluationLogging = false;
+    
+    [Tooltip("Evaluation Log File Path")] public string evaluationLogPath = "evaluation_results.txt";
+    
+    private bool isInferenceMode = false;
 
     /// <summary>
     /// The area bounds.
@@ -69,7 +80,57 @@ public class SoccerEnvController : MonoBehaviour
                 m_PurpleAgentGroup.RegisterAgent(item.Agent);
             }
         }
+        
+        // Check if agents are in inference mode
+        CheckInferenceMode();
+        
+        // Initialize evaluation log file if enabled
+        if (enableEvaluationLogging && isInferenceMode)
+        {
+            InitializeEvaluationLog();
+        }
+        
         ResetScene();
+    }
+    
+    void CheckInferenceMode()
+    {
+        // Check if any agent is using an ONNX model (inference mode)
+        foreach (var item in AgentsList)
+        {
+            var behaviorParams = item.Agent.GetComponent<BehaviorParameters>();
+            if (behaviorParams != null && behaviorParams.Model != null)
+            {
+                isInferenceMode = true;
+                Debug.Log("Inference mode detected - evaluation logging enabled");
+                return;
+            }
+        }
+        isInferenceMode = false;
+    }
+    
+    void InitializeEvaluationLog()
+    {
+        // Create or clear the evaluation log file
+        string fullPath = Path.Combine(Application.dataPath, "..", evaluationLogPath);
+        File.WriteAllText(fullPath, "");
+        Debug.Log($"Evaluation log initialized at: {fullPath}");
+    }
+    
+    void LogMatchResult(int result)
+    {
+        if (!enableEvaluationLogging || !isInferenceMode)
+            return;
+            
+        try
+        {
+            string fullPath = Path.Combine(Application.dataPath, "..", evaluationLogPath);
+            File.AppendAllText(fullPath, result.ToString() + "\n");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Failed to log match result: {e.Message}");
+        }
     }
 
     void FixedUpdate()
@@ -77,6 +138,9 @@ public class SoccerEnvController : MonoBehaviour
         m_ResetTimer += 1;
         if (m_ResetTimer >= MaxEnvironmentSteps && MaxEnvironmentSteps > 0)
         {
+            // Log timeout/draw (0)
+            LogMatchResult(0);
+            
             m_BlueAgentGroup.GroupEpisodeInterrupted();
             m_PurpleAgentGroup.GroupEpisodeInterrupted();
             ResetScene();
@@ -97,16 +161,52 @@ public class SoccerEnvController : MonoBehaviour
 
     public void GoalTouched(Team scoredTeam)
     {
+        float winReward = 1 - (float)m_ResetTimer / MaxEnvironmentSteps;
+        float loseReward = -1;
+
         if (scoredTeam == Team.Blue)
         {
-            m_BlueAgentGroup.AddGroupReward(1 - (float)m_ResetTimer / MaxEnvironmentSteps);
-            m_PurpleAgentGroup.AddGroupReward(-1);
+            // Log Blue win (1)
+            LogMatchResult(1);
+            
+            m_BlueAgentGroup.AddGroupReward(winReward);
+            m_PurpleAgentGroup.AddGroupReward(loseReward);
+            
+            // Also add individual rewards for PPO compatibility
+            foreach (var item in AgentsList)
+            {
+                if (item.Agent.team == Team.Blue)
+                {
+                    item.Agent.AddReward(winReward);
+                }
+                else
+                {
+                    item.Agent.AddReward(loseReward);
+                }
+            }
         }
         else
         {
-            m_PurpleAgentGroup.AddGroupReward(1 - (float)m_ResetTimer / MaxEnvironmentSteps);
-            m_BlueAgentGroup.AddGroupReward(-1);
+            // Log Purple win (2)
+            LogMatchResult(2);
+            
+            m_PurpleAgentGroup.AddGroupReward(winReward);
+            m_BlueAgentGroup.AddGroupReward(loseReward);
+            
+            // Also add individual rewards for PPO compatibility
+            foreach (var item in AgentsList)
+            {
+                if (item.Agent.team == Team.Purple)
+                {
+                    item.Agent.AddReward(winReward);
+                }
+                else
+                {
+                    item.Agent.AddReward(loseReward);
+                }
+            }
         }
+        
         m_PurpleAgentGroup.EndGroupEpisode();
         m_BlueAgentGroup.EndGroupEpisode();
         ResetScene();
